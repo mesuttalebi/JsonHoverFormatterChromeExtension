@@ -75,6 +75,23 @@ function findJsonAncestor(element) {
             return null;
         }
 
+        // If this element has already been replaced inline, use the stored original JSON
+        if (current.dataset && current.dataset.jsonOriginal) {
+            try {
+                const parsed = JSON.parse(current.dataset.jsonOriginal);
+                if (typeof parsed === 'object' && parsed !== null) {
+                    return { element: current, text: current.dataset.jsonOriginal, parsed: parsed };
+                }
+            } catch (e) {
+                // Stored value is not valid JSON, fall through
+            }
+        }
+
+        // Skip elements that already contain our inline pre block (already replaced)
+        if (current.querySelector && current.querySelector('.json-hover-inline-pre')) {
+            return null;
+        }
+
         if (!current.innerText && !current.textContent) {
             current = current.parentElement;
             count++;
@@ -219,6 +236,11 @@ function showModal(parsedJson) {
 }
 
 function replaceInPlace(element, parsedJson) {
+    // Store the original JSON string on the element so subsequent hovers can
+    // re-parse it correctly rather than reading the rendered HTML text.
+    if (!element.dataset.jsonOriginal) {
+        element.dataset.jsonOriginal = JSON.stringify(parsedJson);
+    }
     const pre = document.createElement('pre');
     pre.className = 'json-hover-inline-pre';
     pre.innerHTML = syntaxHighlight(parsedJson);
