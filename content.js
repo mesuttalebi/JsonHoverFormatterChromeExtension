@@ -17,6 +17,10 @@ chrome.storage.onChanged.addListener(function (changes, namespace) {
 
 let hoverTimer = null;
 
+// ---------------------------------------------------------------------------
+// Hover detection
+// ---------------------------------------------------------------------------
+
 document.addEventListener('mouseover', (e) => {
     if (e.target.closest('#json-hover-action-bar') || e.target.closest('#json-hover-modal-overlay')) {
         return;
@@ -63,6 +67,10 @@ document.addEventListener('mouseout', (e) => {
         removeHoverState();
     }
 });
+
+// ---------------------------------------------------------------------------
+// DOM helpers
+// ---------------------------------------------------------------------------
 
 function findJsonAncestor(element) {
     let current = element;
@@ -163,12 +171,67 @@ function removeHoverState() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// JSON processing
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively walks a parsed JSON value and tries to JSON.parse any string
+ * values that look like escaped JSON objects/arrays.
+ *
+ * Performance guards:
+ *  - Strings shorter than 7 chars can't be a meaningful JSON object → skip
+ *  - Strings longer than 200 000 chars → skip to avoid blocking the thread
+ *  - Only attempt parse if the trimmed string starts with { or [
+ *  - Depth limit of 10 to prevent infinite recursion
+ */
+function deepParseJson(value, depth) {
+    if (depth === undefined) depth = 0;
+    if (depth > 10) return value;
+
+    if (typeof value === 'string') {
+        // --- Performance fix: skip obviously non-JSON strings immediately ---
+        if (value.length < 7 || value.length > 200000) return value;
+
+        const trimmed = value.trim();
+        if (
+            (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+            (trimmed.startsWith('[') && trimmed.endsWith(']'))
+        ) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (typeof parsed === 'object' && parsed !== null) {
+                    // Successfully parsed — recurse into it too
+                    return deepParseJson(parsed, depth + 1);
+                }
+            } catch (e) {
+                // Not valid JSON, return as-is
+            }
+        }
+        return value;
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(item => deepParseJson(item, depth + 1));
+    }
+
+    if (typeof value === 'object' && value !== null) {
+        const result = {};
+        for (const key of Object.keys(value)) {
+            result[key] = deepParseJson(value[key], depth + 1);
+        }
+        return result;
+    }
+
+    return value;
+}
+
 function syntaxHighlight(json) {
     if (typeof json != 'string') {
         json = JSON.stringify(json, undefined, 2);
     }
     json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+    return json.replace(/(\"(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*\"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
         var cls = 'json-value-number';
         if (/^"/.test(match)) {
             if (/:$/.test(match)) {
@@ -187,6 +250,8 @@ function syntaxHighlight(json) {
 
 function showModal(parsedJson) {
     removeHoverState();
+    // Recursively unescape any nested JSON strings before rendering
+    parsedJson = deepParseJson(parsedJson);
     const existingModal = document.getElementById('json-hover-modal-overlay');
     if (existingModal) existingModal.remove();
 
@@ -241,9 +306,44 @@ function replaceInPlace(element, parsedJson) {
     if (!element.dataset.jsonOriginal) {
         element.dataset.jsonOriginal = JSON.stringify(parsedJson);
     }
+
+    // Bail out if we already replaced this element.
+    if (element.querySelector('.json-hover-inline-pre')) {
+        return;
+    }
+
+    // Recursively unescape any nested JSON strings before rendering
+    parsedJson = deepParseJson(parsedJson);
+
+    // IMPORTANT: Do NOT use element.innerHTML = '' here.
+    // Pages built with React / Angular / Vue keep virtual-DOM references to
+    // the original child nodes. Removing them via innerHTML causes the
+    // framework's reconciliation to call removeChild on already-detached
+    // nodes, producing:
+    //   "NotFoundError: Failed to execute 'removeChild' on 'Node'"
+    //
+    // Instead, we HIDE element-children with CSS and blank out text nodes.
+    // The nodes stay in the DOM so the framework never loses them.
+    Array.from(element.childNodes).forEach(node => {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            // Hide element nodes without removing them
+            node.style.cssText += ';display:none!important';
+            node.dataset.jsonHoverHidden = '1';
+        } else if (node.nodeType === Node.TEXT_NODE) {
+            // Clear text nodes (they're not tracked by virtual-DOM frameworks)
+            node._jsonHoverOriginalText = node.textContent;
+            node.textContent = '';
+        }
+    });
+
+    // Fix for horizontal scroll in complex flex/grid layouts:
+    // We measure the container's actual width BEFORE inserting the <pre>.
+    // This pins the <pre> to a hard pixel width so it won't force flex/grid columns to expand.
+    const parentWidth = element.clientWidth;
+
     const pre = document.createElement('pre');
     pre.className = 'json-hover-inline-pre';
+    pre.style.setProperty('max-width', `${parentWidth}px`, 'important');
     pre.innerHTML = syntaxHighlight(parsedJson);
-    element.innerHTML = '';
     element.appendChild(pre);
 }

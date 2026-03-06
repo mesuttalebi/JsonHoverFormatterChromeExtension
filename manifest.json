@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JSON Hover Formatter",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Hover over JSON text to format it in a modal or inline.",
   "permissions": ["storage"],
   "content_scripts": [
